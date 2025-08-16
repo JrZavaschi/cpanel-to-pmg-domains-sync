@@ -38,7 +38,7 @@ Create a dedicated PMG user with permissions:
 Save the script as `/usr/local/bin/cpanel-pmg-sync.sh`:
 
 ```bash
-curl -o /usr/local/bin/cpanel-pmg-sync.sh https://raw.githubusercontent.com/yourusername/repo/main/cpanel-pmg-sync.sh
+curl -o /usr/local/bin/cpanel-pmg-sync.sh https://raw.githubusercontent.com/JrZavaschi/cpanel-to-pmg-domains-sync/main/cpanel-pmg-sync.sh
 ```
 
 Make it executable:
