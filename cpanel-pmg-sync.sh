@@ -7,7 +7,7 @@ PMG_PASSWORD="#"
 
 # Transport Configuration
 SYNC_TRANSPORTS=true  # Set to false to disable transport synchronization
-TARGET_HOST="191.5.169.9"
+TARGET_HOST="#"
 TARGET_PORT="25"
 PROTOCOL="smtp"
 USE_MX="1" # 1 to use MX records, 0 to use TARGET_HOST
