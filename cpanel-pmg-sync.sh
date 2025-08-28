@@ -5,6 +5,13 @@ PMG_IP="#"
 PMG_USER="#" # user@pmg
 PMG_PASSWORD="#"
 
+# Transport Configuration
+TARGET_HOST="#"
+TARGET_PORT="25"
+PROTOCOL="smtp"
+USE_MX="1" # 1 to use MX records, 0 to use TARGET_HOST
+COMMENT="Added automatically by cPanel sync script"
+
 # Function to record messages with timestamp
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
@@ -54,7 +61,21 @@ if [ -z "$DOMAINS_PMG" ]; then
     DOMAINS_PMG=""
 fi
 
-# 4. Add domains that are in cPanel but not in PMG
+# 4. Get PMG transport list
+log "Fetching transport entries from PMG..."
+RESPONSE_TRANSPORTS_PMG=$(curl -s -k -b "PMGAuthCookie=$TICKET" -H "CSRFPreventionToken: $CSRF_TOKEN" \
+    -X GET \
+    "https://$PMG_IP:8006/api2/json/config/transport")
+
+# Extract transport domains from PMG response
+TRANSPORTS_PMG=$(echo "$RESPONSE_TRANSPORTS_PMG" | grep -o '"domain":"[^"]*' | cut -d'"' -f4 | sort)
+
+if [ -z "$TRANSPORTS_PMG" ]; then
+    log "No transport entries found in PMG."
+    TRANSPORTS_PMG=""
+fi
+
+# 5. Add domains that are in cPanel but not in PMG
 log "Syncing domains: adding new ones..."
 for domain in $DOMAINS_CPANEL; do
     if ! echo "$DOMAINS_PMG" | grep -q "^$domain$"; then
@@ -75,9 +96,29 @@ for domain in $DOMAINS_CPANEL; do
     else
         log "Domain $domain already exists in PMG. Skipping."
     fi
+    
+    # 6. Add transport entry for domain if it doesn't exist
+    if ! echo "$TRANSPORTS_PMG" | grep -q "^$domain$"; then
+        log "Adding transport entry for: $domain"
+        RESPONSE_TRANSPORT=$(curl -s -k -b "PMGAuthCookie=$TICKET" -H "CSRFPreventionToken: $CSRF_TOKEN" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -d "{\"domain\":\"$domain\", \"host\":\"$TARGET_HOST\", \"port\":$TARGET_PORT, \"protocol\":\"$PROTOCOL\", \"use_mx\":$USE_MX, \"comment\":\"$COMMENT\"}" \
+            "https://$PMG_IP:8006/api2/json/config/transport")
+            
+        if echo "$RESPONSE_TRANSPORT" | grep -q '"data":'; then
+            log "SUCCESS: Transport entry for $domain added!"
+        elif echo "$RESPONSE_TRANSPORT" | grep -q 'already exists'; then
+            log "NOTICE: Transport entry for $domain already exists"
+        else
+            log "ERROR adding transport for $domain: $RESPONSE_TRANSPORT"
+        fi
+    else
+        log "Transport entry for $domain already exists. Skipping."
+    fi
 done
 
-# 5. Remove domains that are in PMG but not in cPanel
+# 7. Remove domains that are in PMG but not in cPanel
 log "Syncing domains: removing obsolete..."
 for domain in $DOMAINS_PMG; do
     if ! echo "$DOMAINS_CPANEL" | grep -q "^$domain$"; then
@@ -93,6 +134,25 @@ for domain in $DOMAINS_PMG; do
         fi
     else
         log "Domain $domain still exists in cPanel. Keeping."
+    fi
+done
+
+# 8. Remove transport entries that are in PMG but not in cPanel
+log "Syncing transport entries: removing obsolete..."
+for domain in $TRANSPORTS_PMG; do
+    if ! echo "$DOMAINS_CPANEL" | grep -q "^$domain$"; then
+        log "Removing transport entry: $domain"
+        RESPONSE_DELETE_TRANSPORT=$(curl -s -k -b "PMGAuthCookie=$TICKET" -H "CSRFPreventionToken: $CSRF_TOKEN" \
+            -X DELETE \
+            "https://$PMG_IP:8006/api2/json/config/transport/$domain")
+
+        if echo "$RESPONSE_DELETE_TRANSPORT" | grep -q '"data":'; then
+            log "SUCCESS: Transport entry $domain removed!"
+        else
+            log "ERROR removing transport entry $domain: $RESPONSE_DELETE_TRANSPORT"
+        fi
+    else
+        log "Transport entry $domain still needed. Keeping."
     fi
 done
 
