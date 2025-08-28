@@ -1,11 +1,12 @@
 # cPanel to Proxmox Mail Gateway Sync Script
 
-Automatically synchronizes domains between cPanel/WHM and Proxmox Mail Gateway (PMG). Adds new domains to PMG and removes domains that no longer exist in cPanel.
+Automatically synchronizes domains and transport configurations between cPanel/WHM and Proxmox Mail Gateway (PMG). Adds new domains to PMG, configures transport settings, and removes domains/transports that no longer exist in cPanel.
 
 ## Features
 
 - Automatic domain synchronization
-- Bi-directional sync (adds missing domains, removes obsolete ones)
+- Transport configuration synchronization (optional)
+- Bi-directional sync (adds missing domains/transports, removes obsolete ones)
 - Detailed logging with timestamps
 - Error handling for common issues
 - API-based integration
@@ -20,12 +21,21 @@ Automatically synchronizes domains between cPanel/WHM and Proxmox Mail Gateway (
 
 ## Configuration
 
-Edit the script with your PMG credentials:
+Edit the script with your PMG credentials and transport settings:
 
 ```bash
+# Proxmox Mail Gateway Credentials
 PMG_IP="your.pmg.server.ip"          # Proxmox Mail Gateway IP
 PMG_USER="syncuser@pmg"              # PMG API user
 PMG_PASSWORD="your_secure_password"  # PMG API password
+
+# Transport Configuration
+SYNC_TRANSPORTS=true                 # Set to false to disable transport synchronization
+TARGET_HOST="191.5.169.9"            # Target server IP for mail routing
+TARGET_PORT="25"                     # SMTP port
+PROTOCOL="smtp"                      # Transport protocol (smtp/lmtp)
+USE_MX="0"                           # Enable MX lookups (0 = false, 1 = true)
+COMMENT="Added automatically by cPanel sync script"  # Comment for transport entries
 ```
 
 Create a dedicated PMG user with permissions:
