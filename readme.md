@@ -6,6 +6,7 @@ Automatically synchronizes domains and transport configurations between cPanel/W
 
 - Automatic domain synchronization
 - Transport configuration synchronization (optional)
+- MX record verification to exclude domains using external email services
 - Bi-directional sync (adds missing domains/transports, removes obsolete ones)
 - Detailed logging with timestamps
 - Error handling for common issues
@@ -17,7 +18,20 @@ Automatically synchronizes domains and transport configurations between cPanel/W
 - cPanel/WHM server
 - Proxmox Mail Gateway (PMG) with API access
 - `curl` installed on cPanel server
+- dig (from bind-utils or dnsutils package)
 - WHM API access (requires root privileges)
+
+
+## MX Verification
+
+The script includes accurate MX record verification to prevent syncing domains that use external email services (like GSuite or Microsoft 365). When enabled:
+
+- The script checks MX records for each domain using the same logic as the reference script
+- Only domains with MX records pointing to allowed IPs are synced
+- Domains with external MX records are skipped
+- Existing domains with external MX records are removed from PMG
+
+To disable MX verification, set CHECK_MX=false in the configuration.
 
 ## Configuration
 
@@ -31,7 +45,7 @@ PMG_PASSWORD="your_secure_password"  # PMG API password
 
 # Transport Configuration
 SYNC_TRANSPORTS=true                 # Set to false to disable transport synchronization
-TARGET_HOST="191.5.169.9"            # Target server IP for mail routing
+TARGET_HOST="#"                      # Target server IP for mail routing
 TARGET_PORT="25"                     # SMTP port
 PROTOCOL="smtp"                      # Transport protocol (smtp/lmtp)
 USE_MX="0"                           # Enable MX lookups (0 = false, 1 = true)
@@ -140,6 +154,8 @@ chmod 700 /usr/local/bin/cpanel-pmg-sync.sh
 | Permission denied      | Ensure script is run as root                                 |
 | No domains found       | Verify WHMAPI access and account status                      |
 | CSRF token missing     | Check authentication process and network connectivity        |
+| MX verification failed | Check SERVER_IPS configuration and DNS settings              |
+| dig command not found  | Install bind-utils (RHEL/CentOS) or dnsutils (Debian/Ubuntu) | 
 
 ## Contributing
 
