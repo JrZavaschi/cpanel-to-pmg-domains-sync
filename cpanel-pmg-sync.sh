@@ -11,6 +11,7 @@ TARGET_HOST="#"            # Target server IP for mail routing
 TARGET_PORT="25"                     # SMTP port
 PROTOCOL="smtp"                      # Transport protocol (smtp/lmtp)
 USE_MX="0"                           # Enable MX lookups (0 = false, 1 = true)
+# COMMENT identifica entradas DESTE servidor no PMG; use um valor único por servidor para não remover domínios/transports de outros
 COMMENT="Added automatically by cPanel sync script"  # Comment for transport entries
 
 # MX Verification Configuration
@@ -109,6 +110,10 @@ if [ -z "$DOMAINS_PMG" ]; then
     DOMAINS_PMG=""
 fi
 
+# Lista de domínios cujo transport foi adicionado por ESTE servidor (identificado pelo COMMENT)
+# Só removemos domains/transports que estão nessa lista, para não apagar entradas de outros servidores
+TRANSPORTS_OUR_SERVER=""
+
 # 4. Get PMG transport list (only if transport sync is enabled)
 if [ "$SYNC_TRANSPORTS" = true ]; then
     log "Fetching transport entries from PMG..."
@@ -122,6 +127,16 @@ if [ "$SYNC_TRANSPORTS" = true ]; then
     if [ -z "$TRANSPORTS_PMG" ]; then
         log "No transport entries found in PMG."
         TRANSPORTS_PMG=""
+    fi
+
+    # Domínios cujo transport tem o COMMENT deste script (só esses serão removidos se não estiverem no cPanel)
+    if command -v jq >/dev/null 2>&1; then
+        TRANSPORTS_OUR_SERVER=$(echo "$RESPONSE_TRANSPORTS_PMG" | jq -r --arg c "$COMMENT" '.data[]? | select(.comment == $c) | .domain' 2>/dev/null | sort -u)
+        if [ -n "$TRANSPORTS_OUR_SERVER" ]; then
+            log "Transports deste servidor (comment=\"$COMMENT\"): $(echo $TRANSPORTS_OUR_SERVER | tr '\n' ' ')"
+        fi
+    else
+        log "WARNING: jq not found. Will NOT remove any domains or transports to avoid deleting other servers' entries. Install jq for selective removal."
     fi
 fi
 
@@ -186,9 +201,17 @@ for domain in $DOMAINS_CPANEL; do
     fi
 done
 
-# 8. Remove domains that are in PMG but not in cPanel (or fail MX check if enabled)
-log "Syncing domains: removing obsolete..."
+# 8. Remove domains that are in PMG but not in cPanel - APENAS se o domínio for "deste servidor" (tem transport com nosso COMMENT)
+log "Syncing domains: removing obsolete (only domains owned by this server)..."
+if [ -z "$TRANSPORTS_OUR_SERVER" ]; then
+    log "Skipping domain removal (only removes domains with transport comment \"$COMMENT\"; no such transports or jq not installed)."
+else
 for domain in $DOMAINS_PMG; do
+    # Só considera remoção se o domínio tiver transport com nosso COMMENT (evita apagar domínios de outros servidores)
+    if ! echo "$TRANSPORTS_OUR_SERVER" | grep -q "^$domain$"; then
+        log "Domain $domain has no transport with our comment. Skipping (belongs to another server)."
+        continue
+    fi
     # Check if domain should be removed (not in cPanel or fails MX check)
     if [ "$CHECK_MX" = true ]; then
         # If MX checking is enabled, verify if domain still points to our server
@@ -235,57 +258,62 @@ for domain in $DOMAINS_PMG; do
         fi
     fi
 done
+fi
 
-# 9. Remove transport entries that are in PMG but not in cPanel (or fail MX check if enabled)
+# 9. Remove transport entries - APENAS os que têm nosso COMMENT (não remove transports de outros servidores)
 if [ "$SYNC_TRANSPORTS" = true ]; then
-    log "Syncing transport entries: removing obsolete..."
-    for domain in $TRANSPORTS_PMG; do
-        # Check if transport should be removed (not in cPanel or fails MX check)
-        if [ "$CHECK_MX" = true ]; then
-            # If MX checking is enabled, verify if domain still points to our server
-            if ! check_mx "$domain"; then
-                log "Removing transport entry (MX check failed): $domain"
-                RESPONSE_DELETE_TRANSPORT=$(curl -s -k -b "PMGAuthCookie=$TICKET" -H "CSRFPreventionToken: $CSRF_TOKEN" \
-                    -X DELETE \
-                    "https://$PMG_IP:8006/api2/json/config/transport/$domain")
+    log "Syncing transport entries: removing obsolete (only entries with our comment)..."
+    if [ -z "$TRANSPORTS_OUR_SERVER" ]; then
+        log "Skipping transport removal (no transports with comment \"$COMMENT\" or jq not installed)."
+    else
+        for domain in $TRANSPORTS_OUR_SERVER; do
+            # Check if transport should be removed (not in cPanel or fails MX check)
+            if [ "$CHECK_MX" = true ]; then
+                # If MX checking is enabled, verify if domain still points to our server
+                if ! check_mx "$domain"; then
+                    log "Removing transport entry (MX check failed): $domain"
+                    RESPONSE_DELETE_TRANSPORT=$(curl -s -k -b "PMGAuthCookie=$TICKET" -H "CSRFPreventionToken: $CSRF_TOKEN" \
+                        -X DELETE \
+                        "https://$PMG_IP:8006/api2/json/config/transport/$domain")
 
-                if echo "$RESPONSE_DELETE_TRANSPORT" | grep -q '"data":'; then
-                    log "SUCCESS: Transport entry $domain removed!"
-                else
-                    log "ERROR removing transport entry $domain: $RESPONSE_DELETE_TRANSPORT"
-                fi
-            elif ! echo "$DOMAINS_CPANEL" | grep -q "^$domain$"; then
-                log "Removing transport entry (not in cPanel): $domain"
-                RESPONSE_DELETE_TRANSPORT=$(curl -s -k -b "PMGAuthCookie=$TICKET" -H "CSRFPreventionToken: $CSRF_TOKEN" \
-                    -X DELETE \
-                    "https://$PMG_IP:8006/api2/json/config/transport/$domain")
+                    if echo "$RESPONSE_DELETE_TRANSPORT" | grep -q '"data":'; then
+                        log "SUCCESS: Transport entry $domain removed!"
+                    else
+                        log "ERROR removing transport entry $domain: $RESPONSE_DELETE_TRANSPORT"
+                    fi
+                elif ! echo "$DOMAINS_CPANEL" | grep -q "^$domain$"; then
+                    log "Removing transport entry (not in cPanel): $domain"
+                    RESPONSE_DELETE_TRANSPORT=$(curl -s -k -b "PMGAuthCookie=$TICKET" -H "CSRFPreventionToken: $CSRF_TOKEN" \
+                        -X DELETE \
+                        "https://$PMG_IP:8006/api2/json/config/transport/$domain")
 
-                if echo "$RESPONSE_DELETE_TRANSPORT" | grep -q '"data":'; then
-                    log "SUCCESS: Transport entry $domain removed!"
+                    if echo "$RESPONSE_DELETE_TRANSPORT" | grep -q '"data":'; then
+                        log "SUCCESS: Transport entry $domain removed!"
+                    else
+                        log "ERROR removing transport entry $domain: $RESPONSE_DELETE_TRANSPORT"
+                    fi
                 else
-                    log "ERROR removing transport entry $domain: $RESPONSE_DELETE_TRANSPORT"
-                fi
-            else
-                log "Transport entry $domain still needed. Keeping."
-            fi
-        else
-            # If MX checking is disabled, only check if domain exists in cPanel
-            if ! echo "$DOMAINS_CPANEL" | grep -q "^$domain$"; then
-                log "Removing transport entry: $domain"
-                RESPONSE_DELETE_TRANSPORT=$(curl -s -k -b "PMGAuthCookie=$TICKET" -H "CSRFPreventionToken: $CSRF_TOKEN" \
-                    -X DELETE \
-                    "https://$PMG_IP:8006/api2/json/config/transport/$domain")
-
-                if echo "$RESPONSE_DELETE_TRANSPORT" | grep -q '"data":'; then
-                    log "SUCCESS: Transport entry $domain removed!"
-                else
-                    log "ERROR removing transport entry $domain: $RESPONSE_DELETE_TRANSPORT"
+                    log "Transport entry $domain still needed. Keeping."
                 fi
             else
-                log "Transport entry $domain still needed. Keeping."
+                # If MX checking is disabled, only check if domain exists in cPanel
+                if ! echo "$DOMAINS_CPANEL" | grep -q "^$domain$"; then
+                    log "Removing transport entry: $domain"
+                    RESPONSE_DELETE_TRANSPORT=$(curl -s -k -b "PMGAuthCookie=$TICKET" -H "CSRFPreventionToken: $CSRF_TOKEN" \
+                        -X DELETE \
+                        "https://$PMG_IP:8006/api2/json/config/transport/$domain")
+
+                    if echo "$RESPONSE_DELETE_TRANSPORT" | grep -q '"data":'; then
+                        log "SUCCESS: Transport entry $domain removed!"
+                    else
+                        log "ERROR removing transport entry $domain: $RESPONSE_DELETE_TRANSPORT"
+                    fi
+                else
+                    log "Transport entry $domain still needed. Keeping."
+                fi
             fi
-        fi
-    done
+        done
+    fi
 fi
 
 log "Sync complete."
