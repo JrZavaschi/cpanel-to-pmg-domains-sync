@@ -196,3 +196,13 @@ SOFTWARE.
 For assistance, please open an issue on GitHub.
 
 > Note: Replace placeholders like `your.pmg.server.ip`, `syncuser@pmg`, and `your_secure_password` with your actual credentials before use. Also update the GitHub URLs to point to your actual repository.
+
+## ☕ Support my work
+
+If this project helped you or saved you time, consider supporting my work.
+
+<a href="https://www.buymeacoffee.com/jrzavaschi" target="_blank">
+  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" 
+       alt="Buy Me A Coffee" 
+       style="height: 60px !important;width: 217px !important;">
+</a>
