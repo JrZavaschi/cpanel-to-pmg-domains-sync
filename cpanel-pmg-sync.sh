@@ -11,8 +11,11 @@ TARGET_HOST="#"            # Target server IP for mail routing
 TARGET_PORT="25"                     # SMTP port
 PROTOCOL="smtp"                      # Transport protocol (smtp/lmtp)
 USE_MX="0"                           # Enable MX lookups (0 = false, 1 = true)
-# COMMENT identifica entradas DESTE servidor no PMG; use um valor único por servidor para não remover domínios/transports de outros
+# COMMENT identifica entradas DESTE servidor no PMG; use um valor único por servidor para não remover domínios/transports/dkim de outros
 COMMENT="Added automatically by cPanel sync script"  # Comment for transport entries
+
+# DKIM Sign Domains Configuration
+SYNC_DKIM=true                       # Set to false to disable DKIM sign domains synchronization
 
 # MX Verification Configuration
 CHECK_MX=true                        # Set to false to disable MX verification
@@ -111,7 +114,7 @@ if [ -z "$DOMAINS_PMG" ]; then
 fi
 
 # Lista de domínios cujo transport foi adicionado por ESTE servidor (identificado pelo COMMENT)
-# Só removemos domains/transports que estão nessa lista, para não apagar entradas de outros servidores
+# Só removemos domains/transports/dkim que estão nessa lista, para não apagar entradas de outros servidores
 TRANSPORTS_OUR_SERVER=""
 
 # 4. Get PMG transport list (only if transport sync is enabled)
@@ -136,7 +139,23 @@ if [ "$SYNC_TRANSPORTS" = true ]; then
             log "Transports deste servidor (comment=\"$COMMENT\"): $(echo $TRANSPORTS_OUR_SERVER | tr '\n' ' ')"
         fi
     else
-        log "WARNING: jq not found. Will NOT remove any domains or transports to avoid deleting other servers' entries. Install jq for selective removal."
+        log "WARNING: jq not found. Will NOT remove any domains, transports or dkim entries to avoid deleting other servers' entries. Install jq for selective removal."
+    fi
+fi
+
+# 4b. Get PMG DKIM sign domains list (only if DKIM sync is enabled)
+DOMAINS_DKIM=""
+if [ "$SYNC_DKIM" = true ]; then
+    log "Fetching DKIM sign domains from PMG..."
+    RESPONSE_DKIM_PMG=$(curl -s -k -b "PMGAuthCookie=$TICKET" -H "CSRFPreventionToken: $CSRF_TOKEN" \
+        -X GET \
+        "https://$PMG_IP:8006/api2/json/config/dkim/domains")
+
+    DOMAINS_DKIM=$(echo "$RESPONSE_DKIM_PMG" | grep -o '"domain":"[^"]*' | cut -d'"' -f4 | sort)
+
+    if [ -z "$DOMAINS_DKIM" ]; then
+        log "No DKIM sign domains found in PMG."
+        DOMAINS_DKIM=""
     fi
 fi
 
@@ -197,6 +216,28 @@ for domain in $DOMAINS_CPANEL; do
             fi
         else
             log "Transport entry for $domain already exists. Skipping."
+        fi
+    fi
+
+    # 7b. Add DKIM sign domain if it doesn't exist (only if DKIM sync is enabled)
+    if [ "$SYNC_DKIM" = true ]; then
+        if ! echo "$DOMAINS_DKIM" | grep -q "^$domain$"; then
+            log "Adding DKIM sign domain: $domain"
+            RESPONSE_DKIM=$(curl -s -k -b "PMGAuthCookie=$TICKET" -H "CSRFPreventionToken: $CSRF_TOKEN" \
+                -X POST \
+                -H "Content-Type: application/json" \
+                -d "{\"domain\":\"$domain\"}" \
+                "https://$PMG_IP:8006/api2/json/config/dkim/domains")
+
+            if echo "$RESPONSE_DKIM" | grep -q '"data":'; then
+                log "SUCCESS: DKIM sign domain $domain added!"
+            elif echo "$RESPONSE_DKIM" | grep -q 'already exists'; then
+                log "NOTICE: DKIM sign domain $domain already exists"
+            else
+                log "ERROR adding DKIM sign domain $domain: $RESPONSE_DKIM"
+            fi
+        else
+            log "DKIM sign domain $domain already exists. Skipping."
         fi
     fi
 done
@@ -310,6 +351,52 @@ if [ "$SYNC_TRANSPORTS" = true ]; then
                     fi
                 else
                     log "Transport entry $domain still needed. Keeping."
+                fi
+            fi
+        done
+    fi
+fi
+
+# 10. Remove DKIM sign domains - APENAS de domínios "deste servidor" (transport com nosso COMMENT)
+if [ "$SYNC_DKIM" = true ]; then
+    log "Syncing DKIM sign domains: removing obsolete (only domains owned by this server)..."
+    if [ -z "$TRANSPORTS_OUR_SERVER" ]; then
+        log "Skipping DKIM removal (only removes domains with transport comment \"$COMMENT\"; no such transports or jq not installed)."
+    else
+        for domain in $TRANSPORTS_OUR_SERVER; do
+            if ! echo "$DOMAINS_DKIM" | grep -q "^$domain$"; then
+                continue
+            fi
+
+            should_remove=false
+            if [ "$CHECK_MX" = true ]; then
+                if ! check_mx "$domain"; then
+                    should_remove=true
+                    log "Removing DKIM sign domain (MX check failed): $domain"
+                elif ! echo "$DOMAINS_CPANEL" | grep -q "^$domain$"; then
+                    should_remove=true
+                    log "Removing DKIM sign domain (not in cPanel): $domain"
+                else
+                    log "DKIM sign domain $domain still needed. Keeping."
+                fi
+            else
+                if ! echo "$DOMAINS_CPANEL" | grep -q "^$domain$"; then
+                    should_remove=true
+                    log "Removing DKIM sign domain: $domain"
+                else
+                    log "DKIM sign domain $domain still needed. Keeping."
+                fi
+            fi
+
+            if [ "$should_remove" = true ]; then
+                RESPONSE_DELETE_DKIM=$(curl -s -k -b "PMGAuthCookie=$TICKET" -H "CSRFPreventionToken: $CSRF_TOKEN" \
+                    -X DELETE \
+                    "https://$PMG_IP:8006/api2/json/config/dkim/domains/$domain")
+
+                if echo "$RESPONSE_DELETE_DKIM" | grep -q '"data":'; then
+                    log "SUCCESS: DKIM sign domain $domain removed!"
+                else
+                    log "ERROR removing DKIM sign domain $domain: $RESPONSE_DELETE_DKIM"
                 fi
             fi
         done

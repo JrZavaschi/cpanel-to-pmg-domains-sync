@@ -1,13 +1,15 @@
 # cPanel to Proxmox Mail Gateway Sync Script
 
-Automatically synchronizes domains and transport configurations between cPanel/WHM and Proxmox Mail Gateway (PMG). Adds new domains to PMG, configures transport settings, and removes domains/transports that no longer exist in cPanel.
+Automatically synchronizes domains, transport configurations, and DKIM sign domains between cPanel/WHM and Proxmox Mail Gateway (PMG). Adds new domains to PMG, configures transport and DKIM settings, and removes obsolete entries that no longer exist in cPanel.
 
 ## Features
 
-- Automatic domain synchronization
+- Automatic relay domain synchronization
 - Transport configuration synchronization (optional)
+- DKIM Sign Domains synchronization (optional)
 - MX record verification to exclude domains using external email services
-- Bi-directional sync (adds missing domains/transports, removes obsolete ones)
+- Bi-directional sync (adds missing entries, removes obsolete ones; leaves existing valid entries unchanged)
+- Multi-server safe removal via unique transport `COMMENT` per cPanel server
 - Detailed logging with timestamps
 - Error handling for common issues
 - API-based integration
@@ -18,7 +20,8 @@ Automatically synchronizes domains and transport configurations between cPanel/W
 - cPanel/WHM server
 - Proxmox Mail Gateway (PMG) with API access
 - `curl` installed on cPanel server
-- dig (from bind-utils or dnsutils package)
+- `dig` (from bind-utils or dnsutils package)
+- `jq` (required for selective removal of obsolete entries; without it, the script only adds)
 - WHM API access (requires root privileges)
 
 
@@ -32,6 +35,20 @@ The script includes accurate MX record verification to prevent syncing domains t
 - Existing domains with external MX records are removed from PMG
 
 To disable MX verification, set CHECK_MX=false in the configuration.
+
+## What gets synced
+
+On each run, for domains that pass MX verification (when enabled):
+
+| PMG resource | Action |
+|---|---|
+| Relay Domains (`/config/domains`) | Add if missing; remove if obsolete and owned by this server |
+| Transports (`/config/transport`) | Add if missing; remove if obsolete and owned by this server |
+| DKIM Sign Domains (`/config/dkim/domains`) | Add if missing; remove if obsolete and owned by this server |
+
+Ownership is determined by the transport `COMMENT`. Domains/transports/DKIM entries belonging to other servers (different comment) are never removed. Entries that already exist and are still valid are left unchanged.
+
+**Note:** DKIM signing must already be enabled in the PMG GUI (Mail Proxy → DKIM), with a selector/key configured. This script only manages the Sign Domains list — it does not generate keys or enable DKIM globally.
 
 ## Configuration
 
@@ -49,13 +66,22 @@ TARGET_HOST="#"                      # Target server IP for mail routing
 TARGET_PORT="25"                     # SMTP port
 PROTOCOL="smtp"                      # Transport protocol (smtp/lmtp)
 USE_MX="0"                           # Enable MX lookups (0 = false, 1 = true)
-COMMENT="Added automatically by cPanel sync script"  # Comment for transport entries
+# Use a unique COMMENT per cPanel server when multiple servers share one PMG
+COMMENT="Added automatically by cPanel sync script"
+
+# DKIM Sign Domains Configuration
+SYNC_DKIM=true                       # Set to false to disable DKIM sign domains synchronization
+
+# MX Verification Configuration
+CHECK_MX=true
+SERVER_IPS=("1.2.3.4")               # IPs that valid MX records must resolve to
 ```
 
 Create a dedicated PMG user with permissions:
 
 - Domains: Allocate
 - Domains: Modify
+- Configuration: Modify (needed for DKIM Sign Domains)
 
 ## Installation
 
@@ -115,19 +141,34 @@ tail -f /var/log/cpanel-pmg-sync.log
 ## Sample Output
 
 ```text
-[2025-08-16 10:30:00] Getting authentication ticket from PMG...
-[2025-08-16 10:30:01] Fetching domains from cPanel...
-[2025-08-16 10:30:03] Fetching domains from PMG...
-[2025-08-16 10:30:05] Syncing domains: adding new ones...
-[2025-08-16 10:30:05] Adding domain: newdomain.com
-[2025-08-16 10:30:06] SUCCESS: Domain newdomain.com added!
-[2025-08-16 10:30:06] Domain existing.com already exists in PMG. Skipping.
-[2025-08-16 10:30:06] Syncing domains: removing obsolete...
-[2025-08-16 10:30:06] Removing domain: olddomain.com
-[2025-08-16 10:30:07] SUCCESS: Domain olddomain.com removed!
-[2025-08-16 10:30:07] Domain current.com still exists in cPanel. Keeping.
-[2025-08-16 10:30:07] Sync complete.
+[2026-07-28 10:30:00] Getting authentication ticket from PMG...
+[2026-07-28 10:30:01] Fetching domains from cPanel...
+[2026-07-28 10:30:03] Fetching domains from PMG...
+[2026-07-28 10:30:04] Fetching transport entries from PMG...
+[2026-07-28 10:30:04] Fetching DKIM sign domains from PMG...
+[2026-07-28 10:30:05] Syncing domains: adding new ones...
+[2026-07-28 10:30:05] Adding domain: newdomain.com
+[2026-07-28 10:30:06] SUCCESS: Domain newdomain.com added!
+[2026-07-28 10:30:06] Adding transport entry for: newdomain.com
+[2026-07-28 10:30:06] SUCCESS: Transport entry for newdomain.com added!
+[2026-07-28 10:30:06] Adding DKIM sign domain: newdomain.com
+[2026-07-28 10:30:07] SUCCESS: DKIM sign domain newdomain.com added!
+[2026-07-28 10:30:07] Domain existing.com already exists in PMG. Skipping.
+[2026-07-28 10:30:07] Transport entry for existing.com already exists. Skipping.
+[2026-07-28 10:30:07] DKIM sign domain existing.com already exists. Skipping.
+[2026-07-28 10:30:08] Syncing domains: removing obsolete (only domains owned by this server)...
+[2026-07-28 10:30:08] Removing domain (not in cPanel): olddomain.com
+[2026-07-28 10:30:09] SUCCESS: Domain olddomain.com removed!
+[2026-07-28 10:30:09] Syncing transport entries: removing obsolete (only entries with our comment)...
+[2026-07-28 10:30:10] Removing transport entry (not in cPanel): olddomain.com
+[2026-07-28 10:30:10] SUCCESS: Transport entry olddomain.com removed!
+[2026-07-28 10:30:10] Syncing DKIM sign domains: removing obsolete (only domains owned by this server)...
+[2026-07-28 10:30:11] Removing DKIM sign domain (not in cPanel): olddomain.com
+[2026-07-28 10:30:11] SUCCESS: DKIM sign domain olddomain.com removed!
+[2026-07-28 10:30:11] Sync complete.
 ```
+
+After upgrading from a previous version (relay/transport only), re-run the script: existing valid domains/transports are left as-is, and missing DKIM Sign Domains are added.
 
 ## Security Notes
 
@@ -155,7 +196,10 @@ chmod 700 /usr/local/bin/cpanel-pmg-sync.sh
 | No domains found       | Verify WHMAPI access and account status                      |
 | CSRF token missing     | Check authentication process and network connectivity        |
 | MX verification failed | Check SERVER_IPS configuration and DNS settings              |
-| dig command not found  | Install bind-utils (RHEL/CentOS) or dnsutils (Debian/Ubuntu) | 
+| dig command not found  | Install bind-utils (RHEL/CentOS) or dnsutils (Debian/Ubuntu) |
+| jq not found           | Install jq; without it obsolete entries are not removed      |
+| DKIM add/remove fails  | Ensure DKIM is enabled in PMG and the API user can modify config |
+| Obsolete not removed   | Confirm COMMENT matches transports created by this server    |
 
 ## Contributing
 
